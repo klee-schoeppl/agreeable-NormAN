@@ -1,0 +1,346 @@
+
+;******************************************************************
+;COMMUNICATION SUBROUTINES ****************************************
+;******************************************************************
+to-report shouldShare?
+  ;Three conditions need to obtain for agents to share evidence:
+  ;1. They have already heard of a piece of evidence
+  ;2. They need to be chatty enough
+  ;3. They need to pass the conviction threshold
+  ;4. They have shares left before reaching max-shares
+  ifelse length heard > 0 [
+    ifelse shared-counter < max-shares or use-max-shares-? = false [
+
+      let x random-float 1
+      ifelse x < my-chattiness [
+        let lowerBound (initial-belief - initial-belief * my-threshold)
+        let upperBound (initial-belief + (1 - initial-belief) * my-threshold)
+
+        ifelse (agent-belief < lowerBound OR agent-belief > upperBound)[
+          set shared-counter shared-counter + 1
+          report true
+        ][
+          if show-me-? [show (word "My belief does not pass the threshold.")]
+          report false
+        ]
+      ][
+        if show-me-? [show (word "I am not chatty right now.")]
+        report false
+      ]
+    ][
+      if show-me-? [show (word "I've shared enough.")]
+      report false
+    ]
+  ][
+    if show-me-? [show (word "I don't know anything, so I cannot share evidence.")]
+    report false
+  ]
+
+end
+
+
+
+
+to receiveShare [sharedPiece] ;sharedPiece is the list index the shared piece of evidence
+
+  ;*****************************************************************************************************
+  ;upon receiving a piece of evidence via communication, agents put it to the top of their simple-memory
+  if   member? sharedPiece recency-list [
+    set recency-list remove sharedPiece recency-list
+  ]
+  set recency-list lput sharedPiece recency-list
+
+
+
+  if show-me-? and share = "recent" [show (word "recency-list: " recency-list)]
+
+
+  ;***********************************************************************************************************
+  ;sampling related stuff happens in a subroutine
+
+  ;*********************************************************************************************************
+
+  ;Link-neighbors only accept the piece of evidence if they have not yet seen the parcel
+  ifelse item sharedPiece [agent-evidence-list] of self != "-" [
+    if show-me-? [show (word "I've heard " sharedPiece " before, thanks " [who] of myself". My list: " agent-evidence-list)]
+  ][
+    set agent-evidence-list replace-item sharedPiece agent-evidence-list (item sharedPiece evidence-list)
+    set heard lput sharedPiece heard
+    set last-heard sharedPiece
+    compute-posterior
+
+
+    if plotting-type = "received as novel" [ask myself [countArguments]]
+
+    if show-me-? [show (word [who] of myself " told me " sharedPiece ", now I entertain:" agent-evidence-list " and believe " agent-belief"." )]
+  ]
+  if plotting-type = "sent to" [ask myself [countArguments]]
+  
+  if (breed = As and share = "sample") or (breed = Bs and share-type-B = "sample") [receive-sampling sharedPiece]
+end
+
+
+to sample-share ;non-typed sample sharing
+  let sharedPiece "-"
+
+  ;*******************************************************************************************************************************************
+  ;CLASSIFY ARGUMENTS ACCORDING TO STRENGTH AND POLARITY FROM THE PERSPECTIVE OF THIS AGENT
+  ;*******************************************************************************************************************************************
+  ;for each piece of evidence store its index if it has positive polarity, and false otherwise; then filter out only the indexes
+  let pos-arguments n-values length polarities-list [? -> ifelse-value (item ? polarities-list = true) [?][false]]
+  set pos-arguments filter [x -> x != false] pos-arguments
+
+  ;for each piece of evidence store its index if it has negative polarity, and false otherwise; then filter out only the indexes
+  let neg-arguments n-values length polarities-list [? -> ifelse-value (item ? polarities-list = false) [?][false]]
+  set neg-arguments filter [x -> x != false] neg-arguments
+
+  ;strongest positive argument
+  let strongest-pos-value max update-total
+  let strongest-pos-argument position strongest-pos-value update-total
+  if length pos-arguments = 0 [set strongest-pos-argument "-"]
+
+  ;strongest negative argument
+  let strongest-neg-value min update-total
+  let strongest-neg-argument position strongest-neg-value update-total
+  if length neg-arguments = 0 [set strongest-neg-argument "-"]
+
+  ;weakest positive argument
+  let weakest-pos-value strongest-pos-value
+  let weakest-pos-argument strongest-pos-argument
+  if-else length pos-arguments > 0 [
+    foreach pos-arguments [
+      [x] ->
+      if weakest-pos-value > item x update-total [
+        set weakest-pos-argument x
+        set weakest-pos-value item x update-total
+      ]
+    ]
+  ][
+    set weakest-pos-argument "-"
+  ]
+
+  ;weakest negative argument
+  let weakest-neg-value strongest-neg-value
+  let weakest-neg-argument strongest-neg-argument
+  if-else length neg-arguments > 0 [
+    foreach neg-arguments [
+    [x] ->
+    if weakest-neg-value < item x update-total [
+      set weakest-neg-argument x
+      set weakest-neg-value item x update-total
+    ]
+  ]
+  ][
+    set weakest-neg-argument "-"
+  ]
+
+  ;random negative argument - randomizes per round, not per neighbor, in the case of pairwise sharing
+  let random-neg-argument "-"
+  if length neg-arguments > 0 [set random-neg-argument one-of neg-arguments]
+
+  ;random positive argument
+  let random-pos-argument "-"
+  if length pos-arguments > 0 [set random-pos-argument one-of pos-arguments]
+
+  ;*******************************************************************************************************************************************
+  ;*******************************************************************************************************************************************
+  
+  ifelse pairwise-sharing-? [
+    ;*******************************************************************************************************************************************
+    ;if pairwise-sampling is true, we must do this for each neighbor seperately, and call each neighbour seperately to receive only their piece!
+    ;*******************************************************************************************************************************************
+
+    let i 0 ;helps us iterate through the list of neighbor-polarities
+    foreach neighbors-list [
+      ! ->
+
+      let neighbor-polarity item i neighbors-polarity-list
+      if neighbor-polarity = "-"[
+      ifelse tendency-towards-impact-? [
+          set neighbor-polarity (agent-belief > initial-belief)
+        ][
+          set neighbor-polarity (random 2 > 0)
+        ]
+      ]
+
+      ;tendency-towards-impact-? decides whether agents share a random argument of the relevant polarity, or the one that most cohers with their own belief.
+      if-else tendency-towards-impact-?[
+      ;**************************************************************************************************************
+        ;here, agents want to share what they believe as far as possible, so they maximally conform to polarity if it matches their beliefs, and minimally otherwise
+                ifelse neighbor-polarity [ ;the dominant polarity can be true (in favour of hyp) or false (disconfirming hyp)
+
+          ifelse agent-belief > initial-belief [
+            ;if the agent must share an argument of positive polarity and that matches their own belief, they pick the strongest known such argument
+            set sharedPiece strongest-pos-argument
+
+          ][
+            ;if the agent must share an argument of positive polarity but that doesn't match their belief, they pick the weakest known such argument
+            set sharedPiece weakest-pos-argument
+          ]
+
+        ][
+          ifelse agent-belief < initial-belief [
+            ;if the agent must share an argument of negative polarity and that matches their own belief, they pick the strongest known such argument
+            set sharedPiece strongest-neg-argument
+          ][
+            ;if the agent must share an argument of negative polarity but that doesn't match their belief, they pick the weakest known such argument
+            set sharedPiece weakest-neg-argument
+          ]
+        ]
+        ;**************************************************************************************************************
+      ][
+        ;here agents just obey polarity and share a random appropriate argument
+
+
+        ifelse neighbor-polarity [set sharedPiece random-pos-argument][set sharedPiece random-neg-argument]
+      ]
+
+
+      if show-me-? [
+        ifelse sharedPiece = "-" [
+          show (word "I should share an argument with polarity " neighbor-polarity " to " ! ", my " i "th neighbor. Because I know no such argument, I will remain silent.")]
+        [
+          show (word "I need to communicate an argument with polarity " neighbor-polarity " to " ! ", my " i "th neighbor. I chose " sharedPiece ", which has polarity " item sharedPiece polarities-list ".")
+        ]
+      ]
+
+      if sharedPiece != "-" [ set current-evidence sharedPiece
+        if plotting-type = "uttered" [countArguments]
+        ask turtle ! [receiveShare sharedPiece]
+      ]
+
+
+      set i i + 1   
+    ]
+  ][
+
+
+    ;*******************************************************************************************************************************************
+    ;if pairwise-sharing-? is false, then agents sample from all of their neighbors to decide what to say to all of them at once
+    ;*******************************************************************************************************************************************
+
+    let dominant-polarity-? "none"
+    let pos-counter 0
+    let neg-counter 0
+    foreach neighbors-polarity-list [
+      x ->
+      if x = true [set pos-counter pos-counter + 1]
+      if x = false [set neg-counter neg-counter + 1]
+    ]
+
+    ifelse stochastic-sampling-? [
+      ;agents determine the polarity of their shared-piece stochastically
+      let percentage-pos pos-counter / (pos-counter + neg-counter)
+      let i random-float 1
+      ifelse i < percentage-pos [set dominant-polarity-? true][set dominant-polarity-? false]
+
+    ][;agents determine the polarity of their shared-piece based on majority vote. On a draw, they use the polarity of their own belief or flip a coin.
+      if neg-counter < pos-counter [set dominant-polarity-? true]
+      if neg-counter > pos-counter [set dominant-polarity-? false]
+      if neg-counter = pos-counter [
+        ifelse tendency-towards-impact-? [
+          set dominant-polarity-? (agent-belief > initial-belief)
+        ][
+          set dominant-polarity-? (random 2 > 0)
+        ]
+      ]
+    ]
+
+
+    ifelse tendency-towards-impact-?[ ;here, agents want to share what they believe as far as possible, so they maximally conform to polarity if it matches their beliefs, and minimally otherwise
+      ifelse dominant-polarity-? [ ;the dominant polarity can be true (in favour of hyp) or false (disconfirming hyp)
+        ifelse agent-belief > initial-belief [
+          set sharedPiece strongest-pos-argument
+        ][
+          set sharedPiece weakest-pos-argument
+        ]
+      ][
+        ifelse agent-belief < initial-belief [
+          set sharedPiece strongest-neg-argument
+        ][
+          set sharedPiece weakest-neg-argument
+        ]
+      ]
+    ][
+      ifelse dominant-polarity-? [set sharedPiece random-pos-argument][set sharedPiece random-neg-argument]
+    ]
+
+    if show-me-? [
+      ifelse sharedPiece = "-" [
+        show (word "I should share an argument with polarity " dominant-polarity-? " to all of my neighbors. Because I know no such argument, I will remain silent.")]
+      [
+        show (word "I need to communicate an argument with polarity " dominant-polarity-? " to all of my neighbors. I chose " sharedPiece ", which has polarity " item sharedPiece polarities-list ".") ]
+    ]
+
+    if sharedPiece != "-" [
+      set current-evidence sharedPiece
+      if plotting-type = "uttered" [countArguments]
+      ask link-neighbors [receiveShare sharedPiece]
+    ]
+  ]
+end
+
+to randomshare
+;This is the simplest of the sharing procedures: the agent chooses a random piece of evidence they have heard and shares it with their neighbours.
+  let sharedPiece one-of heard
+  if show-me-? [show (word "I want to communicate " sharedPiece)]
+  set current-evidence sharedPiece
+ if plotting-type = "uttered" [countArguments]
+
+
+  ask link-neighbors [receiveShare sharedPiece]
+end
+
+to impactshare
+;Strategic sharing procedures: the agent chooses the piece of evidence that most convinced them of their current position. They measure this by consulting ther "update-total" string.
+
+  let sharedPiece "-"
+
+  ;*************************************************************************************************************************************
+  ;agents select the strongest positive piece of evidence if believing in HYP more than they started out, strongest negative piece of evidence otherwise
+  ifelse agent-belief > initial-belief [
+    let n max update-total
+    set sharedPiece position n update-total
+  ][
+    let n min update-total
+    set sharedPiece position n update-total
+  ]
+  ;*************************************************************************************************************************************
+
+  if show-me-? [ show (word "I communicate " sharedPiece) ]
+  set current-evidence sharedPiece
+  if plotting-type = "uttered" [countArguments]
+
+  ask link-neighbors [receiveShare sharedPiece]
+end
+
+to simplerecentshare
+
+  ifelse length recency-list >= 1  [
+    let sharedPiece "-"
+    let n random-float 1
+
+    ;*************************************************************************************************************************************
+    ;agents have a 90% chance of sharing the last piece of evidence they encountered and-iff they have recently encountered more than once
+    ;piece-a 10% chance of sharing the second to last
+
+    ifelse n < 0.9 OR length recency-list = 1 [ ;HERE IS THE PROBABILITY OF PICKING THE MOST RECENT EVIDENCE
+      set sharedPiece last recency-list
+    ][
+      let simple-memory-derivative (remove last recency-list recency-list)
+      set sharedPiece one-of simple-memory-derivative
+    ]
+    ;*************************************************************************************************************************************
+
+    if show-me-? [show (word "I want to communicate " sharedPiece)]
+
+    set current-evidence sharedPiece
+    if plotting-type = "uttered" [countArguments]
+    if show-me-? [show (word "recency-list: " recency-list)]
+
+    ask link-neighbors [receiveShare sharedPiece]
+
+  ][
+    if show-me-? [show (word "I don't remember anything from last round.")]
+  ]
+end

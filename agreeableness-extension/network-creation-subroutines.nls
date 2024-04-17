@@ -1,0 +1,44 @@
+;******************************************************************
+;NETWORK CREATION SUBROUTINES *************************************
+;******************************************************************
+
+to create-network-small-world
+    nw:generate-watts-strogatz as links number-of-agents k rewiring-probability
+  layout-circle sort turtles 10
+
+end
+
+to create-network-complete
+  ask turtles [ create-links-with other turtles ]
+  layout-circle sort turtles  10
+end
+
+to create-network-null
+  layout-circle sort turtles  10
+end
+
+to create-network-cycle
+  [turtle-list]
+  let previous-turtle 0
+  foreach turtle-list [ [cur-turtle] ->
+    ask cur-turtle [
+      ifelse previous-turtle != 0 [
+        create-link-with previous-turtle
+        set previous-turtle self
+      ][
+        create-link-with last turtle-list
+        set previous-turtle self
+      ]
+    ]
+  ]
+  layout-circle sort turtles 10
+end
+
+to create-network-wheel
+  let turtle-list sort turtles
+  create-network-cycle but-first turtle-list
+  ask first turtle-list [
+    setxy 0 0
+    create-links-with other turtles
+  ]
+end

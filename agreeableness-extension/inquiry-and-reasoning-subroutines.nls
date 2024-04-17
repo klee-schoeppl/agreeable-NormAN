@@ -1,0 +1,374 @@
+;******************************************************************
+;INQUIRY AND REASONING SUBROUTINES ********************************
+;******************************************************************
+
+to compute-posterior
+;This is called whenever an agent receives a new piece of evidence (parcel). The procedure computes the posterior belief in the hypothesis, given ALL currently recorded pieces of evidence.
+  let b0 agent-belief
+  let b1 0
+
+  ;***********************************************************************************************************************************
+  ;the following block creates a string that is later used to query the R instance
+
+  let heard-sorted sort heard ;recall that heard just stores indexes, so sort applies
+
+  let rQuery (word "cpquery("Bayes-net", event = ("Hypothesis-node" == 'yes'), evidence = (")
+
+  let x 0 ;iterates through all eNodes
+  let y 0 ;keeps track of the additions to the rQuery string
+  while [x < number-of-evidence] [
+
+    if member? x heard-sorted [
+      set rQuery (word rQuery ""item x evidence-nodes" == '" item x agent-evidence-list"'")
+      set y y + 1
+      if y < length heard-sorted [set rQuery (word rQuery " & ")]
+    ]
+    set x x + 1
+  ]
+
+  set rQuery (word rQuery "))")
+
+ ; if show-me-? [print (word "The rQuery for compute-optimal-posterior is " rQuery)]
+
+  ;***********************************************************************************************************************************
+;gRain 
+  let gRainQuery "ev <- setEvidence(gRainbn, nodes = c("
+
+  set x 0 ;iterates through all eNodes
+  set y 0 ;keeps track of the additions to the rQuery string
+  while [x < number-of-evidence] [
+
+    if member? x heard-sorted [
+      set gRainQuery (word gRainQuery "'"item x evidence-nodes"'")
+      set y y + 1
+      if y < length heard-sorted [set gRainQuery (word gRainQuery " , ")]
+    ]
+    set x x + 1
+  ]
+  
+  set gRainQuery (word gRainQuery "), , states = c(")
+
+  set x 0 ;iterates through all eNodes
+  set y 0 ;keeps track of the additions to the rQuery string
+  
+  
+  while [x < number-of-evidence] [
+
+    if member? x heard-sorted [
+      set gRainQuery (word gRainQuery "'"item x agent-evidence-list"'")
+      set y y + 1
+      if y < length heard-sorted [set gRainQuery (word gRainQuery " , ")]
+    ]
+    set x x + 1
+  ]
+   set gRainQuery (word gRainQuery "))")
+  
+ 
+  ;if show-me-? [show  gRainQuery]
+  r:eval gRainQuery
+  
+  let gRainQuery2 (word "matrix.cpt <- querygrain(ev, nodes = c('"hypothesis-node"'), type = 'joint')")
+  ;if show-me-? [show gRainQuery2]
+  r:eval gRainQuery2
+
+ 
+ 
+;********************
+
+  ;Here again, we repeat the query to counteract approximation errors.
+
+  if approximation = "repeater" [
+    repeat repeater [
+      let m r:get rQuery
+      set b1 (b1 + m)
+    ]
+    set b1 (b1 / repeater)
+  ]
+
+  if approximation = "seed"[
+    r:eval (word "set.seed("seed") ")
+    set b1 r:get rQuery
+  ]
+
+  if approximation = "gRain" [
+   set b1 r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+
+  ]
+
+  if show-me-? [show (word "My posterior: " b1)]
+
+  ;This computes the "relative" update: it records how the agent's belief has changed through this particular piece of evidence.
+  let update-r b1 - b0
+  ;set update-relative replace-item last-heard update-relative update-r
+
+  compute-singular
+
+  if show-me-? [show (word "Update-total: " update-total)]
+
+  set agent-belief  b1
+  change-colors
+end
+
+
+
+
+
+to receive-sampling [shared-piece] ;shared-piece is the parcel's list index
+;upon a piece of evidence being shared with them, the receiving agent determines which neighbor sent it and its polarity relative to their initial-belief. The result is stored.
+
+  let i position [who] of myself neighbors-list ;which of my neighbors is sharing this?
+  let polarity-shared-piece item shared-piece polarities-list
+  set neighbors-polarity-list replace-item i neighbors-polarity-list polarity-shared-piece ;the neighbor with position i in the neighbor list has most recently shared an argument with polarity of sharedPiece
+  if show-me-? [show (word "I had an initial belief of " initial-belief " and received evidence " shared-piece "(polarity " polarity-shared-piece ") from " [who] of myself ", which is my " i "th neighbour. ")]
+end
+
+to initialize-polarities-list
+  let x 0
+ 
+  while [x < number-of-evidence] [
+    
+    let rQuery (word "cpquery("Bayes-net", event = ("Hypothesis-node" == 'yes'), evidence = (")
+    set rQuery (word rQuery ""item x evidence-nodes" == '" item x evidence-list "' ))")
+   ;gRain attempt
+    
+    
+    let gRainQuery (word "ev <- setEvidence(gRainbn, nodes = c('"item x evidence-nodes"'),")
+    set gRainQuery (word gRainQuery " states = c('" item x evidence-list "'))")
+    ;if show-me-?[show gRainQuery]
+    r:eval gRainQuery
+
+    let gRainQuery2 (word "matrix.cpt <- querygrain(ev, nodes = c('"hypothesis-node"'), type = 'joint')")
+    ;if show-me-? [show gRainQuery2]
+    r:eval gRainQuery2
+
+    let r 0
+    
+    if approximation = "repeater"[
+      repeat repeater [
+        let v r:get rQuery
+        set r (r + v)
+      ]
+      set r (r / repeater)
+    ]
+    if approximation = "seed"[
+      r:eval (word "set.seed("seed") ")
+      set r r:get rQuery
+    ]
+    
+    if approximation = "gRain" [
+      set r r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+      
+    ]
+    
+    let polarity-x "-"
+    if (r > initial-belief) [set polarity-x true]
+    if (r < initial-belief) [set polarity-x false]
+   
+    set polarities-list replace-item x polarities-list polarity-x
+    
+    show (word "polarity x " polarity-x)
+    show (word "r " r)
+    show (word "initial-belief " initial-belief) 
+    
+    set x x + 1
+  ]
+  
+   if show-me-? [show (word "My polarities-list is " polarities-list)]
+end
+
+
+
+
+
+to compute-singular ;It computes how much the last received piece of evidence would have changed the agent's belief had this been the first piece of evidence they heard (relative to the original prior).
+;In this way, the agents record the isolated diagnosticity of the evidence.
+;This is called whenever a new posterior is calculated.
+  if last-heard != "none"
+  [
+
+    ;***********************************************************************************************************************************
+    ;the following block creates a string that is later used to query the R instance
+    let rQuery (word "cpquery("Bayes-net", event = ("Hypothesis-node" == 'yes'), evidence = (")
+    set rQuery (word rQuery ""item last-heard evidence-nodes" == '" item last-heard evidence-list "' ))")
+    ;***********************************************************************************************************************************
+    
+    ;gRain   
+    
+    let gRainQuery (word "ev <- setEvidence(gRainbn, nodes = c('"item last-heard evidence-nodes"'),")
+    set gRainQuery (word gRainQuery " states = c('" item last-heard evidence-list "'))")
+    ;if show-me-?[show gRainQuery]
+    r:eval gRainQuery
+
+    let gRainQuery2 (word "matrix.cpt <- querygrain(ev, nodes = c('"hypothesis-node"'), type = 'joint')")
+    ;if show-me-? [show gRainQuery2]
+    r:eval gRainQuery2
+    
+      
+    ;****************************************************************************************
+
+    let r 0
+    if approximation = "repeater"[
+      repeat repeater [
+        let v r:get rQuery
+        set r (r + v)
+      ]
+      set r (r / repeater)
+    ]
+    if approximation = "seed"[
+      r:eval (word "set.seed("seed") ")
+      set r r:get rQuery
+    ]
+
+   if approximation = "gRain"[
+
+      set r r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+    ]
+
+
+    if show-me-? [
+    show (word "My singular posterior after hearing only argument '" item last-heard evidence-nodes "', is " r ".")]
+    set update-total replace-item last-heard update-total (r - initial-belief)
+    
+    let polarity "-"
+    if (r > initial-belief) [set polarity true]
+    if (r < initial-belief) [set polarity false]
+   
+    set polarities-list replace-item last-heard polarities-list polarity
+    if show-me-? [show (word "My polarities-list is " polarities-list)]
+    
+  
+  ]
+end
+
+to change-colors
+;changes the agents' colors, given their belief in the hypothesis node.
+  if agent-belief = initial-belief [set color grey]
+  if agent-belief > initial-belief [set color green]
+  if agent-belief < initial-belief [set color red]
+end
+
+to collectEvidence [number] ;number is either the index of the piece of evidence to be collected, or the string "random"
+  let i number
+
+  if number = "random" [
+    ;select the index of an hitherto unknown piece of evidence;
+    let nIndices n-values length agent-evidence-list [ ? -> ifelse-value (item ? agent-evidence-list = "-") [?][false]]
+    set nIndices filter [x -> x != false] nIndices
+    set i one-of nIndices
+  ]
+
+  ;Computation and recording of new evidence
+
+  set heard lput i heard
+
+  set recency-list lput i recency-list
+
+  set last-heard i
+
+  if item i agent-evidence-list = "-"[
+    set agent-evidence-list replace-item i agent-evidence-list item i evidence-list
+  ]
+
+  if show-me-? [show (word "I drew item " i "; my list: " agent-evidence-list)]
+  if show-me-? and share = "recent" [show (word "recency-list: " recency-list)]
+  compute-posterior
+  set draws draws - 1
+
+end
+
+to-report shouldInquire? ;Each round, the agents may collect a new piece of evidence, but only given three conditions hold:
+
+  ifelse draws > 0 [ ;Condition 1: They must still have "draws" (see interface).
+    let p random-float 1
+    ifelse p < curiosity [ ; Condition 2: They must be curious enough
+      ifelse length heard  < number-of-evidence [ ;Condition 3: They must not know all the evidence already
+        report true
+      ][
+        if show-me-? [show (word "I already know all pieces of evidence." )]
+          report false
+      ]
+    ][
+      if show-me-? [show (word "I am not curious this round.")]
+      report false
+    ]
+  ][
+    if show-me-? [show (word "I have no more draws left.")]
+    report false
+  ]
+
+end
+
+to compute-optimal-posterior
+  ;gRain
+  
+  
+  ;**************************
+
+  let rQuery (word "cpquery("Bayes-net", event = ("Hypothesis-node" == 'yes'), evidence = (")
+
+  let x 0
+  while [x < number-of-evidence] [
+    set rQuery (word rQuery "" item x evidence-nodes " == '" item x evidence-list "' ")
+    set x x + 1
+    if x < number-of-evidence [set rQuery (word rQuery " & ")]
+  ]
+  set rQuery (word rQuery "))")
+
+  ;if show-me-? [print (word "The rQuery for compute-optimal-posterior is " rQuery)]
+  
+  
+  ;******************************************************************
+ let gRainQuery "ev <- setEvidence(gRainbn, nodes = c("
+  
+ set x 0
+  while [x < number-of-evidence] [
+      set gRainQuery (word gRainQuery "'"item x evidence-nodes"'")
+      set x x + 1
+      if x < number-of-evidence [set gRainQuery (word gRainQuery " , ")]
+  ]
+  
+  set gRainQuery (word gRainQuery "), , states = c(")
+
+  set x 0 ;iterates through all eNodes
+  while [x < number-of-evidence] [
+
+
+      set gRainQuery (word gRainQuery "'"item x evidence-list"'")
+       set x x + 1
+      if x < number-of-evidence [set gRainQuery (word gRainQuery " , ")]
+  ]
+
+  set gRainQuery (word gRainQuery "))")
+  ;if show-me-? [ show gRainQuery]
+  r:eval gRainQuery
+
+
+  let gRainQuery2 (word "matrix.cpt <- querygrain(ev, nodes = c('"hypothesis-node"'), type = 'joint')")
+  ;if show-me-? [ show gRainQuery2]
+  r:eval gRainQuery2
+
+ 
+  ;if show-me-? [ show (word "The gRain queries for the optimal posterior are " gRainQuery " and " gRainQuery2 ".")]
+
+
+  ;******************************************************************
+
+  if approximation = "repeater"[
+    repeat repeater [
+      let m r:get rQuery
+      set optimal-posterior (optimal-posterior + m)
+    ]
+    set optimal-posterior (optimal-posterior / repeater)
+  ]
+  if approximation = "seed"[
+    r:eval (word "set.seed("seed") ")
+    set optimal-posterior r:get rQuery
+  ]
+
+ if approximation = "gRain"[
+
+    set optimal-posterior r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+  ]
+
+  if show-me-? [show (word "The optimal posterior is " optimal-posterior)]
+end

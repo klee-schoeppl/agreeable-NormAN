@@ -1,0 +1,302 @@
+
+;******************************************************************
+;MISCELLANEOUS SUBROUTINES ****************************************
+;******************************************************************
+
+to initialize-agents
+  show "----------------------------"
+  show "Preparing the run: pre-draws"
+  show "----------------------------"
+  
+  ask turtles [
+    set my-chattiness chattiness
+
+    ;******************************************************************************************************
+    ;This is the agent's initial belief in the hypothesis, determined by the CPT.
+    let rQuery (word "cpquery("Bayes-net", event = ("Hypothesis-node" == 'yes'), evidence = TRUE)")
+
+    
+    ;gRain
+    let gRainQuery "evg <- setEvidence(gRainbn, nodes = TRUE, states = TRUE)"
+    let gRainQuery2 (word "matrix.cpt <- querygrain(evg, nodes = c('"hypothesis-node"'), type = 'joint')")
+    ;if show-me-? [show (word "gRainQueries are " gRainQuery " and " gRainQuery2 ".")]
+      r:eval gRainQuery
+      r:eval gRainQuery2
+     
+    
+    ;******************************************************************************************************
+    let r 0
+    if approximation = "repeater"[
+      repeat repeater [let v r:get rQuery
+        set r (r + v)]
+      set r (r / repeater)]
+    if approximation = "seed"[
+      r:eval (word "set.seed("seed") ")
+      let v r:get rQuery
+      set r v ]
+
+    if approximation = "gRain" [
+   set r r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+
+  ]
+
+    set agent-belief r
+    set initial-belief r
+    ;******************************************************************************************************
+
+    set shared-counter 0
+    set agent-evidence-list []
+    set heard [] ;Stores which pieces of evidence the agent has heard, in order of reception.
+    set recency-list []
+    set polarities-list []
+    set last-heard "none" ;Stores the piece of evidence the agent has last heard.
+    set draws maximum-draws ;Agents may only "draw" from the evidence a limited amount of times. If maximum-draws = number-of-evidence, then full information is assured
+    set update-total [] ;Stores the size of the "total" update: P(HYP|E_{i+1}) - P(HYP); where E_{i+1} is what the agent has just learned.
+    set my-threshold conviction-threshold
+
+    repeat number-of-evidence [
+      set agent-evidence-list lput "-" agent-evidence-list
+      set update-total lput "-" update-total
+      set polarities-list lput "-" polarities-list
+    ]
+
+    ;******************************************************************************************************
+    ;Pre-draws
+    ;[UI toggle] Either each agent performs random initial draws, or they re-draw their previous initial draws
+        
+    ifelse reset-agents-initial-evidence-? [
+      repeat initial-draws [
+        let i random-float 1
+        if i < initial-draws-chance [
+        collectEvidence "random"
+        ]
+      ]
+      set initial-draws-list agent-evidence-list
+    ][
+      set agent-evidence-list initial-draws-list
+      let x 0
+      while [x < number-of-evidence] [
+        if item x agent-evidence-list != "-" [collectEvidence x]
+        set x x + 1
+      ]
+    ]
+    ;******************************************************************************************************
+
+    change-colors
+
+    if show-me-? [show (word "My list: " agent-evidence-list)]
+    set neighbors-list sort [who] of link-neighbors
+    set neighbors-polarity-list []
+    repeat length neighbors-list [
+      set neighbors-polarity-list lput "-" neighbors-polarity-list
+    ]
+  ]
+
+  ask Bs[
+    set my-threshold conviction-threshold-type-B
+    set my-chattiness chattiness-B
+  ]
+
+
+end
+
+to compute-polarization-measure
+  
+  ;************************* This encodes the polarization measure "root mean square" from Angere and Olsson 2017.
+  
+
+  set mean-belief mean [agent-belief] of turtles
+  
+  ask turtles [
+    set squared-distance-from-mean (agent-belief - mean-belief) ^ 2
+    set squared-distance-from-optimal-posterior (agent-belief - optimal-posterior) ^ 2
+  ]
+
+  set mean-squared-distance-from-optimal-posterior mean [squared-distance-from-optimal-posterior] of turtles
+  set mean-squared-distance-from-mean mean [squared-distance-from-mean] of turtles
+  set polarization-measure sqrt mean-squared-distance-from-mean
+  set error-measure sqrt mean-squared-distance-from-optimal-posterior
+  
+  if show-me-? [
+    show (word "mean-squared-distance-from-mean: " mean-squared-distance-from-mean)
+    show (word "mean-belief: " mean-belief)
+    show (word "mean-squared-distance-from-optimal-posterior: " mean-squared-distance-from-optimal-posterior) 
+    show (word "polarization-measure: " polarization-measure)
+  ]
+
+end
+
+to reset-evidence
+  ;******************************************************************************************************
+    ;This is the agent's initial belief in the hypothesis, determined by the CPT.
+    let rQuery (word "cpquery("Bayes-net", event = ("Hypothesis-node" == 'yes'), evidence = TRUE)")
+
+    
+    ;gRain
+    let gRainQuery "evg <- setEvidence(gRainbn, nodes = TRUE, states = TRUE)"
+    let gRainQuery2 (word "matrix.cpt <- querygrain(evg, nodes = c('"hypothesis-node"'), type = 'joint')")
+    ;if show-me-? [show (word "gRainQueries are " gRainQuery " and " gRainQuery2 ".")]
+      r:eval gRainQuery
+      r:eval gRainQuery2
+     
+    
+    ;******************************************************************************************************
+    let r 0
+    if approximation = "repeater"[
+      repeat repeater [let v r:get rQuery
+        set r (r + v)]
+      set r (r / repeater)]
+    if approximation = "seed"[
+      r:eval (word "set.seed("seed") ")
+      let v r:get rQuery
+      set r v ]
+
+    if approximation = "gRain" [
+   set r r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+
+  ]
+
+  set unconditional-hypothesis-probability r
+  
+  
+  
+  let c random-float 1
+  if use-unconditional-hypothesis-probability-? [set hypothesis-probability unconditional-hypothesis-probability]
+  ifelse c < hypothesis-probability [set hypothesis-value "yes"][set hypothesis-value "no"]
+
+  set evidence-probabilities-list []
+  repeat number-of-evidence [
+    set evidence-probabilities-list lput "-" evidence-probabilities-list
+  ]
+  set evidence-list []
+
+  ;*********************************************************************************************************************************************
+  ;For each piece of evidence, the rquery (using either seed or repeater) determines the conditional probability given the actual value of HYP
+  ;Then, we use that probability to determine the actual value of each piece  of evidence
+  let x 0
+  while [x < number-of-evidence] [
+    set r 0
+
+    if approximation = "repeater" [
+      repeat repeater[
+      set r r + (r:get (word "cpquery(" Bayes-net ", event = ("item x evidence-nodes" == 'yes'), evidence = (" Hypothesis-node " == '" hypothesis-value "'))"))
+    ]
+    set r r / repeater
+    ]
+
+    if approximation = "seed" [
+      r:eval (word "set.seed("seed") ")
+      set r (r:get (word "cpquery(" Bayes-net ", event = ("item x evidence-nodes" == 'yes'), evidence = (" Hypothesis-node " == '" hypothesis-value "'))"))
+    ]
+
+   if approximation = "gRain"
+    [
+
+  r:eval  (word "ev <- setEvidence(gRainbn, nodes = c('"Hypothesis-node"'), states = c('"hypothesis-value"'))"  )
+  r:eval (word "matrix.cpt <- querygrain(ev, nodes = c('"item x evidence-nodes"'), type = 'joint')")
+ set r r:get (word "probability_H_true <- as.numeric(matrix.cpt['yes'])")
+     
+    ]
+
+    let n random-float 1
+    ifelse (n < r) [set evidence-list lput "yes" evidence-list][set evidence-list lput "no" evidence-list ]
+    set evidence-probabilities-list (replace-item x evidence-probabilities-list (precision r 2))
+
+
+
+    set x x + 1
+  ]
+  ;*********************************************************************************************************************************************
+
+
+
+  if show-me-?[
+    show  (word "Probabilities that evidence nodes are true, given truth/falsity of hypothesis: " evidence-probabilities-list)
+    show (word "Evidence list: " evidence-list)
+  ]
+
+  set arguments [] ;resets arguments counter
+  repeat number-of-evidence [
+      set arguments lput 0 arguments
+  ]
+
+  if maximum-draws > number-of-evidence [
+    set maximum-draws number-of-evidence
+    print "Note: automatically adjusted [maximum-draws]."
+  ]
+  if initial-draws > maximum-draws [
+    set initial-draws maximum-draws
+    print "Note: automatically adjusted [initial-draws]."
+  ]
+  
+   
+
+ end
+
+to my-clear-all
+  show "*****************************"
+  show "********** NEW RUN **********"
+  show "*****************************"
+
+  ; manually clears the globals we want to reset, leaves retain-me alone.
+  clear-ticks
+  set optimal-posterior 0
+
+  clear-patches
+  clear-drawing
+  clear-all-plots
+  clear-output
+end
+
+to countArguments
+  if current-evidence != "null" [set arguments replace-item current-evidence arguments (item current-evidence arguments + 1)] ;counts current evidence as an argument used
+end
+
+to setupPlots
+  let x 0
+  while [x < number-of-evidence] [
+    create-temporary-plot-pen item x evidence-nodes
+    ifelse x < 13 [set-plot-pen-color 5 + (x * 10)][set-plot-pen-color 0]
+    set x x + 1
+  ]
+  update-plots
+end
+
+to plotArguments
+
+  let x 0
+  while [x < number-of-evidence] [
+    set-current-plot-pen item x evidence-nodes
+    plot item x arguments
+    set x x + 1
+  ]
+
+  set arguments [] ;resets arguments counter
+  repeat number-of-evidence [
+    set arguments lput 0 arguments
+
+    ]
+end
+
+to-report  check-stoping-conditions
+  let stop? false
+
+  if stop-at-full-information-? [
+    if not any? turtles with [length heard  < number-of-evidence ][
+      show "*** State of full information reached ***"
+      set stop? true
+    ]
+  ]
+
+  if stop-at-max-ticks-? [
+    if ticks >= max-ticks [
+      show "*** Upper tick-limit reached ***"
+      set stop? true
+    ]
+  ]
+
+
+  report stop?
+end
+
+
