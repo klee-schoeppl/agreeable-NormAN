@@ -96,13 +96,13 @@ to sample-share ;non-typed sample sharing
 
   ;strongest positive argument
   let strongest-pos-value max update-total
-  let strongest-pos-argument position strongest-pos-value update-total
-  if length pos-arguments = 0 [set strongest-pos-argument "-"]
-
+  let strongest-pos-argument "-"
+  if member? (position strongest-pos-value update-total) pos-arguments [set strongest-pos-argument position strongest-pos-value update-total]
+  
   ;strongest negative argument
   let strongest-neg-value min update-total
-  let strongest-neg-argument position strongest-neg-value update-total
-  if length neg-arguments = 0 [set strongest-neg-argument "-"]
+  let strongest-neg-argument "-"
+  if member? (position strongest-neg-value update-total) neg-arguments [set strongest-neg-argument position strongest-neg-value update-total]
 
   ;weakest positive argument
   let weakest-pos-value strongest-pos-value
